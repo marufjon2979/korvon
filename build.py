@@ -26,11 +26,19 @@ def sources(code):
         f"https://iptv-org.github.io/iptv/countries/{code}.m3u",
         f"https://duckkota.github.io/iptv/playlists/country/{code}.m3u"
     ]
+
     if code != "tj":
         urls.append(
             f"https://raw.githubusercontent.com/Shahrukhalid/"
             f"nexonic-iptv/main/playlists/countries/{code}.m3u"
         )
+
+    if code in ("ru", "tr", "ir", "af"):
+        urls.append(
+            f"https://raw.githubusercontent.com/streamline-iptv/"
+            f"iptv-playlists/dist/countries/{code}.m3u"
+        )
+
     return urls
 
 def parse_m3u(content):
