@@ -26,53 +26,74 @@ def sources(code):
         f"https://iptv-org.github.io/iptv/countries/{code}.m3u",
         f"https://duckkota.github.io/iptv/playlists/country/{code}.m3u"
     ]
+
     if code != "tj":
         urls.append(
             f"https://raw.githubusercontent.com/Shahrukhalid/"
             f"nexonic-iptv/main/playlists/countries/{code}.m3u"
         )
+
+    if code in ("ru", "tr", "ir", "af"):
+        urls.append(
+            f"https://cdn.jsdelivr.net/gh/streamline-iptv/"
+            f"iptv-playlists@dist/countries/{code}.m3u"
+        )
+
     return urls
 
 def parse_m3u(content):
     result = []
     info = None
+
     for line in content.replace("\r", "").split("\n"):
         line = line.strip()
+
         if line.startswith("#EXTINF"):
             info = line
         elif line.startswith("http") and info:
             result.append({"info": info, "url": line})
             info = None
+
     return result
 
 def load_country(code):
     result = []
     seen = set()
 
-    for url in sources(code):
+    for source in sources(code):
         try:
-            r = requests.get(url, timeout=TIMEOUT, headers=HEADERS)
+            r = requests.get(
+                source,
+                timeout=TIMEOUT,
+                headers=HEADERS
+            )
             r.raise_for_status()
+
             if "#EXTM3U" not in r.text[:500]:
                 continue
 
-            for ch in parse_m3u(r.text):
-                if ch["url"] not in seen:
-                    seen.add(ch["url"])
-                    result.append(ch)
+            for channel in parse_m3u(r.text):
+                if channel["url"] not in seen:
+                    seen.add(channel["url"])
+                    result.append(channel)
 
-            print(f"SOURCE OK: {code}", flush=True)
+            print(f"SOURCE OK: {code} — {source}", flush=True)
+
         except Exception as e:
-            print(f"SOURCE ERROR: {code}: {e}", flush=True)
+            print(f"SOURCE ERROR: {code} — {e}", flush=True)
 
     print(f"CANDIDATES {code}: {len(result)}", flush=True)
     return result
 
 def read_prefix(url):
     with requests.get(
-        url, headers=HEADERS, timeout=TIMEOUT,
-        stream=True, allow_redirects=True
+        url,
+        headers=HEADERS,
+        timeout=TIMEOUT,
+        stream=True,
+        allow_redirects=True
     ) as r:
+
         if r.status_code not in (200, 206):
             return None, "", ""
 
@@ -90,6 +111,7 @@ def read_prefix(url):
 def check_url(url, depth=0):
     try:
         data, content_type, final_url = read_prefix(url)
+
         if not data:
             return False
 
@@ -100,17 +122,21 @@ def check_url(url, depth=0):
         )
 
         if not is_hls:
-            return len(data) > 100 and "text/html" not in content_type
+            return (
+                len(data) > 100
+                and "text/html" not in content_type
+                and "application/json" not in content_type
+            )
 
-        if depth > 1:
+        if depth >= 1:
             return False
 
         text = data.decode("utf-8", errors="ignore")
-        lines = [x.strip() for x in text.splitlines() if x.strip()]
-
         target = None
-        for line in lines:
-            if not line.startswith("#"):
+
+        for line in text.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
                 target = urljoin(final_url, line)
                 break
 
@@ -126,26 +152,38 @@ def check_channel(channel):
     for attempt in range(RETRIES + 1):
         if check_url(channel["url"]):
             return channel
+
         if attempt < RETRIES:
             time.sleep(1)
+
     return None
 
 def prepare_info(info, country):
     code = country["code"]
     group = f'{FLAGS.get(code, "")} {country["name"]}'
 
-    info = re.sub(
-        r'group-title="[^"]*"',
-        f'group-title="{group}"',
-        info
-    )
-
-    if "group-title=" not in info:
-        info = info.replace("#EXTINF:", f'#EXTINF:-1 group-title="{group}" ', 1)
+    if 'group-title="' in info:
+        info = re.sub(
+            r'group-title="[^"]*"',
+            f'group-title="{group}"',
+            info
+        )
+    else:
+        info = re.sub(
+            r'(#EXTINF:\s*-?\d+(?:\.\d+)?)',
+            rf'\1 group-title="{group}"',
+            info,
+            count=1
+        )
 
     if "tvg-logo=" not in info:
         logo = f"https://flagcdn.com/w320/{code}.png"
-        info = info.replace("#EXTINF:", f'#EXTINF:-1 tvg-logo="{logo}" ', 1)
+        info = re.sub(
+            r'(#EXTINF:\s*-?\d+(?:\.\d+)?)',
+            rf'\1 tvg-logo="{logo}"',
+            info,
+            count=1
+        )
 
     return info
 
@@ -155,14 +193,16 @@ def main():
 
     for country in COUNTRIES:
         code = country["code"]
-        print(f"\nCHECKING {country['name']}", flush=True)
+
+        print(f"\nCHECKING {country['name']}...", flush=True)
 
         candidates = load_country(code)
         working = []
 
         with ThreadPoolExecutor(max_workers=WORKERS) as pool:
             futures = [
-                pool.submit(check_channel, ch) for ch in candidates
+                pool.submit(check_channel, ch)
+                for ch in candidates
             ]
 
             for future in as_completed(futures):
@@ -178,6 +218,7 @@ def main():
         for ch in working:
             if ch["url"] in seen:
                 continue
+
             seen.add(ch["url"])
             all_channels.append(
                 (prepare_info(ch["info"], country), ch["url"])
@@ -185,10 +226,16 @@ def main():
 
     with open("all.m3u", "w", encoding="utf-8") as f:
         f.write("#EXTM3U\n")
-        for info, url in all_channels:
-            f.write(info + "\n" + url + "\n")
+        f.write(
+            "# Doubo Public Channel Directory attribution: CC BY 4.0\n"
+        )
 
-    print(f"\nBUILD COMPLETE: {len(all_channels)} channels", flush=True)
+        for info, url in all_channels:
+            f.write(info + "\n")
+            f.write(url + "\n")
+
+    print("\nBUILD COMPLETE", flush=True)
+    print(f"TOTAL WORKING: {len(all_channels)}", flush=True)
 
 if __name__ == "__main__":
     main()
